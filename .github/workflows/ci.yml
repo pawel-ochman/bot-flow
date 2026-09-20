@@ -1,0 +1,45 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Verified web artifact from this run
+        value: ${{ jobs.build.outputs.artifact-id }}
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Test and build Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.12'
+      - name: Test, validate, export and verify
+        run: python scripts/build_web.py
+      - name: Upload verified web build
+        id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bot-flow-web-${{ github.sha }}
+          path: build/web/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-logs-${{ github.sha }}
+          path: build/*.log
+          if-no-files-found: ignore
+          retention-days: 7

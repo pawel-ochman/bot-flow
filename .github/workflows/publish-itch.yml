@@ -1,0 +1,66 @@
+name: Publish itch.io release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: itch-production
+  cancel-in-progress: false
+jobs:
+  release-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a version tag on main history
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo 'Use a version tag such as v0.1.0'; exit 1; }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+  build:
+    needs: release-source
+    uses: ./.github/workflows/ci.yml
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: {}
+    environment: production
+    steps:
+      # No repository checkout or artifact code execution in this job.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: web
+      - name: Install verified official Butler 15.31.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 'https://broth.itch.zone/butler/linux-amd64/15.31.0/archive/default' -o "$RUNNER_TEMP/butler.zip"
+          echo "4f2a3f22b12f870923504d4b6935535cad377b45859f5fe9419e3adc0611a48c  $RUNNER_TEMP/butler.zip" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/butler"
+          unzip -q "$RUNNER_TEMP/butler.zip" -d "$RUNNER_TEMP/butler"
+          chmod +x "$RUNNER_TEMP/butler/butler"
+          "$RUNNER_TEMP/butler/butler" version
+      - name: Publish release artifact
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+          ITCH_TARGET: ${{ vars.ITCH_TARGET }}
+          ITCH_CHANNEL: ${{ vars.ITCH_CHANNEL }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$BUTLER_API_KEY" ]] || { echo 'Missing production BUTLER_API_KEY'; exit 1; }
+          [[ "$ITCH_TARGET" =~ ^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$ ]] || { echo 'Set ITCH_TARGET to username/project'; exit 1; }
+          [[ "$ITCH_CHANNEL" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo 'Set ITCH_CHANNEL, for example html5'; exit 1; }
+          "$RUNNER_TEMP/butler/butler" push web "$ITCH_TARGET:$ITCH_CHANNEL" --userversion "$RELEASE_TAG"
